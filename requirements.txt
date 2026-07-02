@@ -1,0 +1,8 @@
+fastapi[standard]
+sqlalchemy[asyncio]
+asyncpg
+pydantic
+pydantic-settings
+uuid-utils
+pwdlib[argon2]
+pyjwt
