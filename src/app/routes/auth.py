@@ -12,7 +12,7 @@ import os
 from dotenv import load_dotenv
 
 from app.database import get_session
-from app.schemas import Token, TokenData, UserCreate, UserResponse
+from app.schemas import RefreshTokenRequest, Token, TokenData, UserCreate, UserResponse
 from ..models import User, UserRole
 
 load_dotenv()
@@ -20,6 +20,7 @@ load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
 ACCESS_TOKEN_EXPIRE_MINUTES = os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES")
+REFRESH_TOKEN_EXPIRE_DAYS = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30")
 
 router = APIRouter(prefix="/auth", tags=["Auth Operations"])
 
@@ -50,13 +51,13 @@ async def authenticate_user(session: AsyncSession, username: str, password: str)
         return False
     return user
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
+def create_token(data: dict, expires_delta: timedelta | None = None, token_type: str = "access"):
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "token_type": token_type})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -69,7 +70,10 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], sessio
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
+        token_type = payload.get("token_type")
         if email is None:
+            raise credentials_exception
+        if token_type != "access":
             raise credentials_exception
         token_data = TokenData(email=email)
     except jwt.InvalidTokenError:
@@ -127,9 +131,45 @@ async def login_for_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token_expires = timedelta(minutes=int(ACCESS_TOKEN_EXPIRE_MINUTES))
-    access_token = create_access_token(
+    refresh_token_expires = timedelta(days=int(REFRESH_TOKEN_EXPIRE_DAYS))
+    access_token = create_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
-    return Token(access_token=access_token, token_type="bearer")
+    refresh_token = create_token(
+        data={"sub": user.email},
+        expires_delta=refresh_token_expires,
+        token_type="refresh",
+    )
+    return Token(access_token=access_token, token_type="bearer", refresh_token=refresh_token)
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_access_token(
+    payload: RefreshTokenRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Token:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        token_payload = jwt.decode(payload.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = token_payload.get("sub")
+        token_type = token_payload.get("token_type")
+        if email is None or token_type != "refresh":
+            raise credentials_exception
+    except jwt.InvalidTokenError:
+        raise credentials_exception
+
+    user = await get_user(session, email)
+    if user is None:
+        raise credentials_exception
+
+    access_token_expires = timedelta(minutes=int(ACCESS_TOKEN_EXPIRE_MINUTES))
+    access_token = create_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return Token(access_token=access_token, token_type="bearer", refresh_token=payload.refresh_token)
 
 #TODO: promote members to admin?

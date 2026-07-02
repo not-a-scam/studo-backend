@@ -9,9 +9,15 @@ from app.models import UserRole
 class Token(BaseModel):
     access_token: str
     token_type: str
+    refresh_token: Optional[str] = None
     
 class TokenData(BaseModel):
     email: Optional[str] = None
+    token_type: Optional[str] = None
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 # API Schemas
 class GroupBase(BaseModel):
