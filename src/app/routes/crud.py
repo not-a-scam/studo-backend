@@ -1,5 +1,6 @@
 from datetime import date
 from typing import Annotated, List
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,9 +9,9 @@ from ..database import get_session
 from app.models import Group, User, Task, TaskCompletion, Comment
 from app.schemas import (
     GroupCreate, GroupResponse, TaskCompletionResponse, TaskCreate, TaskResponse, CommentCreate, CommentResponse, 
-    GroupProgressResponse, UserProgress
+    GroupProgressResponse, UserProgress, UserResponse, UserUpdate
 )
-from app.routes.auth import get_current_active_user, require_admin
+from app.routes.auth import get_current_active_user, get_password_hash, require_admin
 
 router = APIRouter(prefix="/api", tags=["App Operations"])
 
@@ -30,8 +31,8 @@ async def create_task(
     await session.refresh(new_task)
     return new_task
 
-@router.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
-async def create_task(
+@router.post("/tasks", response_model=List[TaskResponse], status_code=status.HTTP_201_CREATED)
+async def create_tasks(
     tasks_in: List[TaskCreate], 
     session: Annotated[AsyncSession, Depends(get_session)],
     admin: Annotated[User, Depends(require_admin)]
@@ -162,6 +163,55 @@ async def get_group_reflections(
     result = await session.execute(query)
     return result.scalars().all()
 
+# User
+
+@router.put("/user/{user_id}", response_model=UserResponse)
+async def update_user_all(
+    user_id: UUID,
+    new_user_data: UserUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)]
+):
+    """Admin Only: Updates any user profile completely (e.g., forcing a password change or shifting groups)"""
+    
+    target_user = await session.get(User, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    update_data = new_user_data.model_dump()
+    
+    if "password" in update_data:
+        password_raw = update_data.pop("password")
+        update_data["hashed_pwd"] = get_password_hash(password_raw)
+        
+    for key, value in update_data.items():
+        setattr(target_user, key, value)
+        
+    await session.commit()
+    await session.refresh(target_user)
+    return target_user
+
+    
+@router.put("/user", response_model=UserResponse)
+async def update_user_limited(
+    new_user_data: UserUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[User, Depends(get_current_active_user)]
+):
+    """Update user fields"""
+    
+    update_data = new_user_data.model_dump(exclude_unset=True)
+    
+    for key, value in update_data.items():
+        if key == "group_id":
+            raise HTTPException(status_code=403, detail="You do not have admin acess")
+        setattr(current_user, key, value)
+        
+    await session.commit()
+    await session.refresh(current_user)
+    return current_user
+
+# Groups
 
 @router.get("/groups/progress", response_model=GroupProgressResponse)
 async def get_my_group_progress(
@@ -229,6 +279,46 @@ async def get_groups(
     groups = result.scalars().all()
     
     return groups
+
+@router.get("/group/{group_id}/users", response_model=List[UserResponse])
+async def get_specific_group_users(
+    group_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)]
+):
+    """Admin only: Get all users from a specific group"""
+
+    target_group = await session.get(Group, group_id)
+    if not target_group:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Group not found"
+        )
+
+    stmt = select(User).where(User.group_id == group_id)
+    result = await session.execute(stmt)
+    users = result.scalars().all()
+
+    return users
+
+@router.get("/group/users", response_model=List[UserResponse])
+async def get_current_group_users(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_active_user)]
+):
+    """Get all users from current user's group"""
+    target_group = await session.get(Group, user.group_id)
     
+    if not target_group:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Group not found"
+        )
+
+    stmt = select(User).where(User.group_id == user.group_id)
+    result = await session.execute(stmt)
+    users = result.scalars().all()
+
+    return users
     
     
