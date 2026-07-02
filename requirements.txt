@@ -6,3 +6,7 @@ pydantic-settings
 uuid-utils
 pwdlib[argon2]
 pyjwt
+pytest
+pytest-asyncio
+httpx
+aiosqlite
