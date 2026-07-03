@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import UserRole
+from app.models import User, UserRole
 from conftest import auth_headers, create_group, create_user, seed_task
 
 
@@ -119,7 +119,6 @@ async def test_get_current_group_users(client, db_session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="/api/groups/progress selects User.full_name property instead of mapped column")
 async def test_group_progress_endpoint(client, db_session):
     group = await create_group(db_session, name="Progress Group")
     admin = await create_user(
@@ -182,7 +181,6 @@ async def test_update_user_limited_rejects_group_change(client, db_session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="/api/user/{user_id} tries to setattr full_name property without a setter")
 async def test_update_user_all_admin_success(client, db_session):
     group = await create_group(db_session, name="Update Group")
     admin = await create_user(
@@ -239,3 +237,70 @@ async def test_get_specific_group_users_returns_404_for_missing_group(client, db
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_admin_can_update_group(client, db_session):
+    admin_group = await create_group(db_session, name="Group Admin Group")
+    await create_user(
+        db_session,
+        email="group_update_admin@example.com",
+        password="password123",
+        full_name="Group Update Admin",
+        role=UserRole.ADMIN,
+        group_id=admin_group.id,
+    )
+    group = await create_group(db_session, name="Original Group Name")
+    
+    headers = await auth_headers(client, "group_update_admin@example.com", "password123")
+    response = await client.put(
+        f"/api/group/{group.id}",
+        headers=headers,
+        json={"name": "Updated Group Name"}
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "Updated Group Name"
+
+
+@pytest.mark.asyncio
+async def test_admin_can_get_all_users(client, db_session):
+    admin_group = await create_group(db_session, name="Get Users Admin Group")
+    await create_user(
+        db_session,
+        email="get_users_admin@example.com",
+        password="password123",
+        full_name="Get Users Admin",
+        role=UserRole.ADMIN,
+        group_id=admin_group.id,
+    )
+    
+    headers = await auth_headers(client, "get_users_admin@example.com", "password123")
+    response = await client.get("/api/users", headers=headers)
+    assert response.status_code == 200
+    assert len(response.json()) >= 1
+
+
+@pytest.mark.asyncio
+async def test_admin_can_delete_user(client, db_session):
+    admin_group = await create_group(db_session, name="Delete User Admin Group")
+    await create_user(
+        db_session,
+        email="delete_user_admin@example.com",
+        password="password123",
+        full_name="Delete User Admin",
+        role=UserRole.ADMIN,
+        group_id=admin_group.id,
+    )
+    target_user = await create_user(
+        db_session,
+        email="to_be_deleted_user@example.com",
+        password="password123",
+        full_name="To Be Deleted User",
+        role=UserRole.USER,
+        group_id=admin_group.id,
+    )
+    
+    headers = await auth_headers(client, "delete_user_admin@example.com", "password123")
+    response = await client.delete(f"/api/user/{target_user.id}", headers=headers)
+    assert response.status_code == 204
+    assert await db_session.get(User, target_user.id) is None

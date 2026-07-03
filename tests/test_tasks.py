@@ -3,12 +3,11 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import select
 
-from app.models import TaskCompletion, UserRole
+from app.models import Task, TaskCompletion, UserRole
 from conftest import auth_headers, create_group, create_user, seed_task
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="TaskCreate schema uses external_url while model expects external_link")
 async def test_admin_can_create_task(client, db_session):
     admin_group = await create_group(db_session, name="Admins")
     await create_user(
@@ -35,7 +34,6 @@ async def test_admin_can_create_task(client, db_session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="/api/tasks returns list but response_model is TaskResponse")
 async def test_admin_can_create_multiple_tasks(client, db_session):
     admin_group = await create_group(db_session, name="Bulk Admins")
     await create_user(
@@ -183,3 +181,123 @@ async def test_get_tasks_by_target_date(client, db_session):
     body = response.json()
     assert len(body) == 1
     assert body[0]["title"] == "Today task"
+
+
+@pytest.mark.asyncio
+async def test_admin_can_update_task(client, db_session):
+    group = await create_group(db_session, name="Task Update Group")
+    admin = await create_user(
+        db_session,
+        email="update_task_admin@example.com",
+        password="password123",
+        full_name="Update Admin",
+        role=UserRole.ADMIN,
+        group_id=group.id,
+    )
+    task = await seed_task(db_session, created_by=admin.id, title="Original Task")
+    
+    headers = await auth_headers(client, "update_task_admin@example.com", "password123")
+    response = await client.put(
+        f"/api/task/{task.id}",
+        headers=headers,
+        json={
+            "title": "Updated Task Title",
+            "description": "Updated Description",
+            "external_url": "https://example.com/updated",
+            "target_date": str(date.today()),
+        }
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "Updated Task Title"
+    assert body["description"] == "Updated Description"
+    assert body["external_url"] == "https://example.com/updated"
+
+
+@pytest.mark.asyncio
+async def test_admin_can_delete_task(client, db_session):
+    group = await create_group(db_session, name="Task Delete Group")
+    admin = await create_user(
+        db_session,
+        email="delete_task_admin@example.com",
+        password="password123",
+        full_name="Delete Admin",
+        role=UserRole.ADMIN,
+        group_id=group.id,
+    )
+    task = await seed_task(db_session, created_by=admin.id, title="To Be Deleted")
+    
+    headers = await auth_headers(client, "delete_task_admin@example.com", "password123")
+    response = await client.delete(
+        f"/api/task/{task.id}",
+        headers=headers,
+    )
+    assert response.status_code == 204
+    
+    # check that task is actually deleted
+    assert await db_session.get(Task, task.id) is None
+
+
+@pytest.mark.asyncio
+async def test_get_task_completions(client, db_session):
+    group_a = await create_group(db_session, name="Group A")
+    group_b = await create_group(db_session, name="Group B")
+
+    admin = await create_user(
+        db_session,
+        email="task_comp_admin@example.com",
+        password="password123",
+        full_name="Task Admin",
+        role=UserRole.ADMIN,
+        group_id=group_a.id,
+    )
+    user_a = await create_user(
+        db_session,
+        email="user_a@example.com",
+        password="password123",
+        full_name="User A",
+        role=UserRole.USER,
+        group_id=group_a.id,
+    )
+    user_b = await create_user(
+        db_session,
+        email="user_b@example.com",
+        password="password123",
+        full_name="User B",
+        role=UserRole.USER,
+        group_id=group_b.id,
+    )
+
+    task = await seed_task(db_session, created_by=admin.id, title="Group Task")
+
+    # Complete the task for user_a
+    completion = TaskCompletion(user_id=user_a.id, task_id=task.id)
+    db_session.add(completion)
+    await db_session.commit()
+
+    user_a_headers = await auth_headers(client, "user_a@example.com", "password123")
+    user_b_headers = await auth_headers(client, "user_b@example.com", "password123")
+    admin_headers = await auth_headers(client, "task_comp_admin@example.com", "password123")
+
+    # 1. User A gets completions for group A
+    response = await client.get(f"/api/tasks/{task.id}/completions?group_id={group_a.id}", headers=user_a_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2  # Admin and User A are both in group A
+    user_a_status = next(u for u in body if u["email"] == "user_a@example.com")
+    admin_status = next(u for u in body if u["email"] == "task_comp_admin@example.com")
+    assert user_a_status["completed"] is True
+    assert admin_status["completed"] is False
+
+    # 2. User A tries to get completions for group B (Forbidden)
+    response = await client.get(f"/api/tasks/{task.id}/completions?group_id={group_b.id}", headers=user_a_headers)
+    assert response.status_code == 403
+
+    # 3. Admin gets completions for group B
+    response = await client.get(f"/api/tasks/{task.id}/completions?group_id={group_b.id}", headers=admin_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1  # User B is in group B
+    assert body[0]["email"] == "user_b@example.com"
+    assert body[0]["completed"] is False
+
