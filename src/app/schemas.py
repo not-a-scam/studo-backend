@@ -17,7 +17,7 @@ class TokenData(BaseModel):
 
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 # API Schemas
 class GroupBase(BaseModel):
@@ -35,6 +35,7 @@ class GroupResponse(GroupBase):
     created_at: datetime
         
 class UserBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     email: EmailStr
     full_name: Optional[str] = Field(None, max_length=100, examples=["John Doe"])
 
@@ -44,8 +45,8 @@ class UserCreate(UserBase):
     
 class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(None, max_length=100, examples=["John Doe"])
-    email: Optional[EmailStr] 
-    password: Optional[str] = Field(..., min_length=8, examples=["super_secret_password"])
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(None, min_length=8, examples=["super_secret_password"])
     group_id: Optional[UUID] = None
 
 class UserResponse(UserBase):
@@ -87,6 +88,7 @@ class TaskCompletionResponse(BaseModel):
         
 class CommentCreate(BaseModel):
     content: str = Field(..., min_length=1, examples=["Today went great! Got blocked on item #2 but worked it out."])
+    group_id: Optional[UUID] = None
 
 class CommentResponse(BaseModel):
     model_config=ConfigDict(
@@ -110,3 +112,13 @@ class GroupProgressResponse(BaseModel):
     group_id: UUID
     total_tasks_today: int
     member_progress: List[UserProgress]
+
+class TaskCompletionUserStatus(BaseModel):
+    model_config=ConfigDict(
+        from_attributes=True
+    )
+    id: UUID
+    full_name: Optional[str] = None
+    email: str
+    completed: bool
+
