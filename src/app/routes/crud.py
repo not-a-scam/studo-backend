@@ -1,15 +1,17 @@
 from datetime import date
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from ..database import get_session
-from app.models import Group, User, Task, TaskCompletion, Comment
+from app.models import Group, User, Task, TaskCompletion, Comment, UserRole
 from app.schemas import (
     GroupCreate, GroupResponse, TaskCompletionResponse, TaskCreate, TaskResponse, CommentCreate, CommentResponse, 
-    GroupProgressResponse, UserProgress, UserResponse, UserUpdate
+    GroupProgressResponse, UserProgress, UserResponse, UserUpdate, TaskCompletionUserStatus
 )
 from app.routes.auth import get_current_active_user, get_password_hash, require_admin
 
@@ -25,7 +27,10 @@ async def create_task(
     admin: Annotated[User, Depends(require_admin)]
 ):
     """Admin only: Create a global task for the day."""
-    new_task = Task(**task_in.model_dump(), created_by=admin.id)
+    task_data = task_in.model_dump()
+    if task_data.get("external_url"):
+        task_data["external_url"] = str(task_data["external_url"])
+    new_task = Task(**task_data, created_by=admin.id)
     session.add(new_task)
     await session.commit()
     await session.refresh(new_task)
@@ -41,7 +46,10 @@ async def create_tasks(
     created_tasks = []
     
     for task_data in tasks_in:
-        new_task = Task(**task_data.model_dump(), created_by=admin.id)
+        t_data = task_data.model_dump()
+        if t_data.get("external_url"):
+            t_data["external_url"] = str(t_data["external_url"])
+        new_task = Task(**t_data, created_by=admin.id)
         session.add(new_task)
         created_tasks.append(new_task)
 
@@ -115,6 +123,60 @@ async def toggle_task_completion(
         await session.commit()
         return {"status": "completed", "task_id": task_id}
 
+
+@router.get("/tasks/{task_id}/completions", response_model=List[TaskCompletionUserStatus])
+async def get_task_completions(
+    task_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    group_id: Optional[UUID] = None,
+):
+    """Get all users in a group and their completion status for a specific task."""
+    task = await session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if group_id:
+        if current_user.role != UserRole.ADMIN and group_id != current_user.group_id:
+            raise HTTPException(status_code=403, detail="You do not have access to view completions for this group.")
+    else:
+        group_id = current_user.group_id
+        if not group_id:
+            if current_user.role == UserRole.ADMIN:
+                stmt = select(Group).order_by(Group.created_at.asc())
+                result = await session.execute(stmt)
+                first_group = result.scalars().first()
+                if first_group:
+                    group_id = first_group.id
+                else:
+                    raise HTTPException(status_code=400, detail="No groups exist in the database.")
+            else:
+                raise HTTPException(status_code=400, detail="User is not assigned to any group.")
+
+    stmt = select(User).where(User.group_id == group_id)
+    result = await session.execute(stmt)
+    users = result.scalars().all()
+
+    comp_stmt = select(TaskCompletion.user_id).where(
+        and_(
+            TaskCompletion.task_id == task_id,
+            TaskCompletion.user_id.in_([u.id for u in users]) if users else False
+        )
+    )
+    comp_result = await session.execute(comp_stmt)
+    completed_user_ids = set(comp_result.scalars().all())
+
+    user_statuses = []
+    for u in users:
+        user_statuses.append({
+            "id": u.id,
+            "full_name": u.full_name,
+            "email": u.email,
+            "completed": u.id in completed_user_ids
+        })
+    return user_statuses
+
+
 # Comments
 
 @router.post("/comments", response_model=CommentResponse)
@@ -123,19 +185,34 @@ async def create_reflection(
     session: Annotated[AsyncSession, Depends(get_session)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ):
-    """Post a reflection. Group ID is automatically bound to the user's group."""
-    if not current_user.group_id:
-        raise HTTPException(status_code=400, detail="User is not assigned to any group.")
+    """Post a reflection. Group ID is automatically bound to the user's group or specified group."""
+    group_id = comment_in.group_id
+    if group_id:
+        if current_user.role != UserRole.ADMIN and group_id != current_user.group_id:
+            raise HTTPException(status_code=403, detail="You do not have access to post to this group.")
+    else:
+        group_id = current_user.group_id
+        if not group_id:
+            stmt = select(Group).order_by(Group.created_at.asc())
+            result = await session.execute(stmt)
+            first_group = result.scalars().first()
+            if first_group:
+                group_id = first_group.id
+            else:
+                raise HTTPException(status_code=400, detail="User is not assigned to any group, and no groups exist.")
         
     new_comment = Comment(
         content=comment_in.content,
         user_id=current_user.id,
-        group_id=current_user.group_id  # Forced isolation
+        group_id=group_id
     )
     session.add(new_comment)
     await session.commit()
-    await session.refresh(new_comment)
-    return new_comment
+    
+    # Eagerly load the user relationship to avoid lazy loading MissingGreenlet issues
+    stmt = select(Comment).options(selectinload(Comment.user)).where(Comment.id == new_comment.id)
+    result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 @router.get("/comments", response_model=List[CommentResponse])
@@ -143,17 +220,30 @@ async def get_group_reflections(
     session: Annotated[AsyncSession, Depends(get_session)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     target_date: date = date.today(),
+    group_id: UUID | None = None,
 ):
     """Fetch reflections from users in the same group, strictly restricted to a single day."""
-    if not current_user.group_id:
-        return []
+    if group_id:
+        if current_user.role != UserRole.ADMIN and group_id != current_user.group_id:
+            raise HTTPException(status_code=403, detail="You do not have access to this group's reflections.")
+    else:
+        group_id = current_user.group_id
+        if not group_id:
+            stmt = select(Group).order_by(Group.created_at.asc())
+            result = await session.execute(stmt)
+            first_group = result.scalars().first()
+            if first_group:
+                group_id = first_group.id
+            else:
+                return []
 
     # Filter by BOTH group_id and the target_date
     query = (
         select(Comment)
+        .options(selectinload(Comment.user))
         .where(
             and_(
-                Comment.group_id == current_user.group_id,
+                Comment.group_id == group_id,
                 Comment.target_date == target_date
             )
         )
@@ -163,7 +253,71 @@ async def get_group_reflections(
     result = await session.execute(query)
     return result.scalars().all()
 
+@router.delete("/comment/{comment_id}", response_model=CommentResponse)
+async def delete_comment(
+    comment_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_active_user)],
+):
+    """Delete a comment. Admin can update all comments while users can only update created comments"""
+    stmt = select(Comment).options(selectinload(Comment.user)).where(Comment.id == comment_id)
+    result = await session.execute(stmt)
+    target_comment = result.scalars().first()
+    
+    if target_comment is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Comment doesn't exist"
+        )
+    
+    if user.role != UserRole.ADMIN and target_comment.user_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot delete comments that are not your own"
+        )
+        
+    await session.delete(target_comment)
+    await session.commit()
+    return target_comment
+
+
+@router.put("/comment/{comment_id}", response_model=CommentResponse)
+async def update_comment(
+    comment_id: int,
+    new_comment_data:CommentCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_active_user)],
+):
+    """Update a comment. Admin can update all comments while users can only update created comments"""
+    target_comment = await session.get(Comment, comment_id)
+    
+    if target_comment is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Comment doesn't exist"
+        )
+    
+    if user.role != UserRole.ADMIN and target_comment.user_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot update comments that are not your own"
+        )
+    
+    setattr(target_comment, "content", new_comment_data.content)
+    await session.commit()
+    
+    stmt = select(Comment).options(selectinload(Comment.user)).where(Comment.id == target_comment.id)
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
 # User
+
+@router.get("/users/me", response_model=UserResponse)
+async def get_me(
+    current_user: Annotated[User, Depends(get_current_active_user)]
+):
+    """Get the current user's profile."""
+    return current_user
 
 @router.put("/user/{user_id}", response_model=UserResponse)
 async def update_user_all(
@@ -178,16 +332,29 @@ async def update_user_all(
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    update_data = new_user_data.model_dump()
+    update_data = new_user_data.model_dump(exclude_unset=True)
     
     if "password" in update_data:
         password_raw = update_data.pop("password")
-        update_data["hashed_pwd"] = get_password_hash(password_raw)
+        if password_raw:
+            update_data["hashed_pwd"] = get_password_hash(password_raw)
+        
+    if "full_name" in update_data:
+        update_data["name"] = update_data.pop("full_name")
         
     for key, value in update_data.items():
-        setattr(target_user, key, value)
+        if getattr(target_user, key) != value:
+            setattr(target_user, key, value)
         
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email address already registered."
+        )
+        
     await session.refresh(target_user)
     return target_user
 
@@ -202,12 +369,30 @@ async def update_user_limited(
     
     update_data = new_user_data.model_dump(exclude_unset=True)
     
-    for key, value in update_data.items():
-        if key == "group_id":
-            raise HTTPException(status_code=403, detail="You do not have admin acess")
-        setattr(current_user, key, value)
+    if "group_id" in update_data:
+        raise HTTPException(status_code=403, detail="You do not have admin acess")
         
-    await session.commit()
+    if "password" in update_data:
+        password_raw = update_data.pop("password")
+        if password_raw:
+            update_data["hashed_pwd"] = get_password_hash(password_raw)
+        
+    if "full_name" in update_data:
+        update_data["name"] = update_data.pop("full_name")
+        
+    for key, value in update_data.items():
+        if getattr(current_user, key) != value:
+            setattr(current_user, key, value)
+        
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email address already registered."
+        )
+        
     await session.refresh(current_user)
     return current_user
 
@@ -231,21 +416,21 @@ async def get_my_group_progress(
     progress_query = (
         select(
             User.id,
-            User.full_name,
+            User.name,
             func.count(TaskCompletion.id).label("completed_count")
         )
         .outerjoin(TaskCompletion, User.id == TaskCompletion.user_id)
         # Only count completions linked to today's tasks
         .outerjoin(Task, and_(TaskCompletion.task_id == Task.id, Task.target_date == date.today()))
         .where(User.group_id == current_user.group_id)
-        .group_by(User.id, User.full_name)
+        .group_by(User.id, User.name)
     )
     
     progress_res = await session.execute(progress_query)
     rows = progress_res.all()
 
     member_progress = [
-        UserProgress(user_id=row.id, full_name=row.full_name, completed_count=row.completed_count)
+        UserProgress(user_id=row.id, full_name=row.name, completed_count=row.completed_count)
         for row in rows
     ]
 
@@ -320,5 +505,101 @@ async def get_current_group_users(
     users = result.scalars().all()
 
     return users
+
+@router.delete("/group/{group_id}")
+async def delete_group(
+    group_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)],
+):
+    """Admin Only: Delete a group"""
+    target_group = await session.get(Group, group_id)
     
+    if not target_group:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Group not found"
+        )
+    
+    await session.delete(target_group)
+    await session.commit()
+
+@router.put("/group/{group_id}", response_model=GroupResponse)
+async def update_group(
+    group_id: UUID,
+    group_in: GroupCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)]
+):
+    """Admin only: Updates a group name"""
+    group = await session.get(Group, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    group.name = group_in.name
+    await session.commit()
+    await session.refresh(group)
+    return group
+
+@router.get("/users", response_model=List[UserResponse])
+async def get_all_users(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)]
+):
+    """Admin Only: Get all users in the system"""
+    stmt = select(User)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+@router.delete("/user/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(
+    user_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)]
+):
+    """Admin Only: Delete a user"""
+    target_user = await session.get(User, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    await session.delete(target_user)
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.put("/task/{task_id}", response_model=TaskResponse)
+async def update_task(
+    task_id: int,
+    task_in: TaskCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)]
+):
+    """Admin only: Update a task"""
+    task = await session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    update_data = task_in.model_dump()
+    if update_data.get("external_url"):
+        update_data["external_url"] = str(update_data["external_url"])
+        
+    for key, value in update_data.items():
+        setattr(task, key, value)
+        
+    await session.commit()
+    await session.refresh(task)
+    return task
+
+@router.delete("/task/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task(
+    task_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)]
+):
+    """Admin only: Delete a task"""
+    task = await session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    await session.delete(task)
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     
