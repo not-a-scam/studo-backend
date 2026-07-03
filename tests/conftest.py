@@ -144,7 +144,7 @@ async def seed_task(
     task = Task(
         title=title,
         description="Test task",
-        external_link=None,
+        external_url=None,
         target_date=target_date_value or date.today(),
         created_by=created_by,
     )
