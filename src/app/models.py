@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, UniqueConstraint, func, Text
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, String, UniqueConstraint, func, Text, Integer
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from uuid_utils.compat import uuid7
@@ -82,6 +82,7 @@ class Task(Base):
     __tablename__="tasks"
 
     id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
         primary_key=True,
         autoincrement=True
     )
@@ -90,7 +91,7 @@ class Task(Base):
         nullable=False
     )
     description: Mapped[Optional[str]] = mapped_column(Text)
-    external_link: Mapped[Optional[str]] = mapped_column(Text)
+    external_url: Mapped[Optional[str]] = mapped_column(Text)
     target_date: Mapped[date] = mapped_column(
         Date,
         default=date.today(),
@@ -109,7 +110,7 @@ class Task(Base):
 class TaskCompletion(Base):
     __tablename__="task_completions"
     
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
@@ -127,7 +128,7 @@ class TaskCompletion(Base):
 class Comment(Base):
     __tablename__ = "comments"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     
     target_date: Mapped[date] = mapped_column(
