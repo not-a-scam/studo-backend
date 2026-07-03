@@ -1,26 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from typing import Annotated
+from typing import Annotated, List
 from pwdlib import PasswordHash
 import jwt
 import os
 from dotenv import load_dotenv
 
 from app.database import get_session
-from app.schemas import RefreshTokenRequest, Token, TokenData, UserCreate, UserResponse
-from ..models import User, UserRole
+from app.schemas import RefreshTokenRequest, Token, TokenData, UserCreate, UserResponse, GroupResponse
+from ..models import User, UserRole, Group
 
 load_dotenv()
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
 ACCESS_TOKEN_EXPIRE_MINUTES = os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES")
-REFRESH_TOKEN_EXPIRE_DAYS = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30")
+REFRESH_TOKEN_EXPIRE_DAYS = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "40")
 
 router = APIRouter(prefix="/auth", tags=["Auth Operations"])
 
@@ -96,6 +96,12 @@ async def require_admin(current_user: Annotated[User, Depends(get_current_active
     return current_user
 
 # Auth endpoints
+@router.get("/groups", response_model=List[GroupResponse])
+async def get_auth_groups(session: Annotated[AsyncSession, Depends(get_session)]):
+    query = select(Group)
+    result = await session.execute(query)
+    return result.scalars().all()
+
 @router.post("/register", response_model=UserResponse)
 async def register_user(user: UserCreate, session: Annotated[AsyncSession, Depends(get_session)]):
     existing_user = await get_user(session, user.email)
@@ -110,7 +116,8 @@ async def register_user(user: UserCreate, session: Annotated[AsyncSession, Depen
         name=user.full_name or "",
         email=user.email,
         role=UserRole.USER,
-        hashed_pwd=hashed_password
+        hashed_pwd=hashed_password,
+        group_id=user.group_id
     )
     
     session.add(db_user)
@@ -120,6 +127,8 @@ async def register_user(user: UserCreate, session: Annotated[AsyncSession, Depen
 
 @router.post("/token", response_model=Token)
 async def login_for_access_token(
+    request: Request,
+    response: Response,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     session: Annotated[AsyncSession, Depends(get_session)]
 ) -> Token:
@@ -140,21 +149,43 @@ async def login_for_access_token(
         expires_delta=refresh_token_expires,
         token_type="refresh",
     )
+    
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=int(REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
+        path="/auth",
+    )
+    
     return Token(access_token=access_token, token_type="bearer", refresh_token=refresh_token)
 
 
 @router.post("/refresh", response_model=Token)
 async def refresh_access_token(
-    payload: RefreshTokenRequest,
+    request: Request,
+    response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
+    refresh_token: Annotated[str | None, Cookie()] = None,
+    payload: RefreshTokenRequest | None = None,
 ) -> Token:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    token = refresh_token
+    if not token and payload:
+        token = payload.refresh_token
+        
+    if not token:
+        raise credentials_exception
+
     try:
-        token_payload = jwt.decode(payload.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        token_payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = token_payload.get("sub")
         token_type = token_payload.get("token_type")
         if email is None or token_type != "refresh":
@@ -170,6 +201,24 @@ async def refresh_access_token(
     access_token = create_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
-    return Token(access_token=access_token, token_type="bearer", refresh_token=payload.refresh_token)
+    
+    response.set_cookie(
+        key="refresh_token",
+        value=token,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=int(REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
+        path="/auth",
+    )
+    
+    return Token(access_token=access_token, token_type="bearer", refresh_token=token)
 
-#TODO: promote members to admin?
+
+@router.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie(
+        key="refresh_token",
+        path="/auth",
+    )
+    return {"message": "Successfully logged out"}
