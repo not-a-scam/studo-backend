@@ -304,3 +304,40 @@ async def test_admin_can_delete_user(client, db_session):
     response = await client.delete(f"/api/user/{target_user.id}", headers=headers)
     assert response.status_code == 204
     assert await db_session.get(User, target_user.id) is None
+
+
+@pytest.mark.asyncio
+async def test_init_db_creates_aphorao_group(engine, db_session):
+    import app.database
+    from app.database import init_db
+    from app.models import Group
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+    
+    # Save the original engine and AsyncSessionFactory
+    original_engine = app.database.engine
+    original_factory = app.database.AsyncSessionFactory
+    
+    # Override them with the test engine and session factory
+    app.database.engine = engine
+    app.database.AsyncSessionFactory = async_sessionmaker(
+        bind=engine,
+        class_=AsyncSession,
+        autoflush=True,
+        expire_on_commit=False,
+    )
+    
+    try:
+        # Call init_db
+        await init_db()
+        
+        # Verify the group exists
+        stmt = select(Group).where(Group.name == "Aphorao")
+        result = await db_session.execute(stmt)
+        group = result.scalars().first()
+        assert group is not None
+        assert group.name == "Aphorao"
+    finally:
+        # Restore original engine and factory
+        app.database.engine = original_engine
+        app.database.AsyncSessionFactory = original_factory
