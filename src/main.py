@@ -20,6 +20,9 @@ app = FastAPI(title="Todo", lifespan=lifespan)
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://studo-frontend.pages.dev/",
+    "https://studo.zechyeo.com",
+    "https://studo.notascam.me",
 ]
 if os.getenv("ALLOWED_ORIGINS"):
     origins = os.getenv("ALLOWED_ORIGINS").split(",")
