@@ -8,16 +8,13 @@ from sqlalchemy import select
 from typing import Annotated, List
 from pwdlib import PasswordHash
 import jwt
-import os
-from dotenv import load_dotenv
 
-from app.database import get_session
-from app.schemas import RefreshTokenRequest, Token, TokenData, UserCreate, UserResponse, GroupResponse
+from src.app.database import get_session
+from src.app.schemas import RefreshTokenRequest, Token, TokenData, UserCreate, UserResponse, GroupResponse
 from ..models import User, UserRole, Group
 
-from app.config import get_settings
+from src.app.config import get_settings
 
-load_dotenv()
 
 router = APIRouter(prefix="/auth", tags=["Auth Operations"])
 

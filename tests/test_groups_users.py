@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import User, UserRole
+from src.app.models import User, UserRole
 from conftest import auth_headers, create_group, create_user, seed_task
 
 
@@ -308,19 +308,19 @@ async def test_admin_can_delete_user(client, db_session):
 
 @pytest.mark.asyncio
 async def test_init_db_creates_aphorao_group(engine, db_session):
-    import app.database
-    from app.database import init_db
-    from app.models import Group
+    import src.app.database
+    from src.app.database import init_db
+    from src.app.models import Group
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
     
     # Save the original engine and AsyncSessionFactory
-    original_engine = app.database.engine
-    original_factory = app.database.AsyncSessionFactory
+    original_engine = src.app.database.engine
+    original_factory = src.app.database.AsyncSessionFactory
     
     # Override them with the test engine and session factory
-    app.database.engine = engine
-    app.database.AsyncSessionFactory = async_sessionmaker(
+    src.app.database.engine = engine
+    src.app.database.AsyncSessionFactory = async_sessionmaker(
         bind=engine,
         class_=AsyncSession,
         autoflush=True,
@@ -339,5 +339,5 @@ async def test_init_db_creates_aphorao_group(engine, db_session):
         assert group.name == "Aphorao"
     finally:
         # Restore original engine and factory
-        app.database.engine = original_engine
-        app.database.AsyncSessionFactory = original_factory
+        src.app.database.engine = original_engine
+        src.app.database.AsyncSessionFactory = original_factory

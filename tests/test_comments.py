@@ -2,7 +2,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.models import UserRole
+from src.app.models import UserRole
 from conftest import auth_headers, create_group, create_user, seed_comment
 
 

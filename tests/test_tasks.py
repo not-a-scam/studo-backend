@@ -3,7 +3,7 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import select
 
-from app.models import Task, TaskCompletion, UserRole
+from src.app.models import Task, TaskCompletion, UserRole
 from conftest import auth_headers, create_group, create_user, seed_task
 
 

@@ -2,7 +2,7 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import get_settings
+from src.app.config import get_settings
 
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
@@ -78,7 +78,7 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         await session.close()
         
 async def init_db() -> None:
-    from app.models import Base, Group
+    from src.app.models import Base, Group
     from sqlalchemy import select
     
     current_engine = get_engine()

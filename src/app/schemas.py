@@ -2,7 +2,7 @@ from datetime import date, datetime
 from uuid import UUID
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl
-from app.models import UserRole
+from src.app.models import UserRole
 
 # Auth Schemas
 

@@ -1,9 +1,9 @@
 from contextlib import asynccontextmanager
 import os
 
-from app.database import init_db, kill_engine
+from src.app.database import init_db, kill_engine
 
-from app.routes import auth, crud
+from src.app.routes import auth, crud
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

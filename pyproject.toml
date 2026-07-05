@@ -1,0 +1,21 @@
+[project]
+name = "backend"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "asyncpg>=0.31.0",
+    "fastapi[standard]>=0.139.0",
+    "httpx>=0.28.1",
+    "pwdlib[argon2]>=0.3.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "pyjwt>=2.13.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "sqlalchemy[asyncio]>=2.0.51",
+    "uuid-utils>=0.16.2",
+]
+
+[tool.fastapi]
+entrypoint = "src.main:app"

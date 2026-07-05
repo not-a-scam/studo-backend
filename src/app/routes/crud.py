@@ -8,12 +8,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from ..database import get_session
-from app.models import Group, User, Task, TaskCompletion, Comment, UserRole
-from app.schemas import (
+from src.app.models import Group, User, Task, TaskCompletion, Comment, UserRole
+from src.app.schemas import (
     GroupCreate, GroupResponse, TaskCompletionResponse, TaskCreate, TaskResponse, CommentCreate, CommentResponse, 
     GroupProgressResponse, UserProgress, UserResponse, UserUpdate, TaskCompletionUserStatus
 )
-from app.routes.auth import get_current_active_user, get_password_hash, require_admin
+from src.app.routes.auth import get_current_active_user, get_password_hash, require_admin
 
 router = APIRouter(prefix="/api", tags=["App Operations"])
 

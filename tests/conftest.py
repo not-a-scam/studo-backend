@@ -14,10 +14,10 @@ os.environ.setdefault("ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "30")
 os.environ.setdefault("REFRESH_TOKEN_EXPIRE_DAYS", "30")
 
-from app.database import get_session
-from app.models import Base, Comment, Group, Task, User, UserRole
-from app.routes import auth, crud
-from app.routes.auth import get_password_hash
+from src.app.database import get_session
+from src.app.models import Base, Comment, Group, Task, User, UserRole
+from src.app.routes import auth, crud
+from src.app.routes.auth import get_password_hash
 
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
