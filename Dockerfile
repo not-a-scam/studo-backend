@@ -7,19 +7,17 @@ ENV UV_LINK_MODE=copy
 
 WORKDIR /app
 
-# Install dependencies first to cache the layer
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --no-dev
-
-# Copy source code and config files
-COPY src /app/src
+# Copy dependency definition files
 COPY pyproject.toml uv.lock /app/
 
+# Install dependencies first to cache the layer
+RUN uv sync --frozen --no-install-project --no-dev
+
+# Copy source code
+COPY src /app/src
+
 # Sync again to install the project itself if applicable (non-dev dependencies)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev
 
 # Use a clean, slim python runtime for the final production image
 FROM python:3.13-slim-bookworm
