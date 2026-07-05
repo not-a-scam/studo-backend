@@ -36,6 +36,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Set environment variables for production execution
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
 # Expose the default Cloud Run port (8080)
 EXPOSE 8080
