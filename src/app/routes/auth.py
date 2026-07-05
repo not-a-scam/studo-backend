@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Request, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from datetime import datetime, timedelta, timezone
 
@@ -15,12 +15,9 @@ from app.database import get_session
 from app.schemas import RefreshTokenRequest, Token, TokenData, UserCreate, UserResponse, GroupResponse
 from ..models import User, UserRole, Group
 
-load_dotenv()
+from app.config import get_settings
 
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES")
-REFRESH_TOKEN_EXPIRE_DAYS = os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "40")
+load_dotenv()
 
 router = APIRouter(prefix="/auth", tags=["Auth Operations"])
 
@@ -28,7 +25,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 pwd_hash = PasswordHash.recommended()
 
-DUMMY_HASH = pwd_hash.hash("dummypassword")
+_DUMMY_HASH = None
+
+def get_dummy_hash():
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = pwd_hash.hash("dummypassword")
+    return _DUMMY_HASH
 
 
 def verify_password(plain_password, hashed_password):
@@ -45,7 +48,7 @@ async def get_user(session: AsyncSession, username: str):
 async def authenticate_user(session: AsyncSession, username: str, password: str):
     user = await get_user(session, username)
     if not user:
-        verify_password(password, DUMMY_HASH)
+        verify_password(password, get_dummy_hash())
         return False
     if not verify_password(password, user.hashed_pwd):
         return False
@@ -58,7 +61,8 @@ def create_token(data: dict, expires_delta: timedelta | None = None, token_type:
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=15)
     to_encode.update({"exp": expire, "token_type": token_type})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    settings = get_settings()
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], session: Annotated[AsyncSession, Depends(get_session)]):
@@ -68,7 +72,8 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], sessio
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        settings = get_settings()
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email = payload.get("sub")
         token_type = payload.get("token_type")
         if email is None:
@@ -139,8 +144,9 @@ async def login_for_access_token(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(minutes=int(ACCESS_TOKEN_EXPIRE_MINUTES))
-    refresh_token_expires = timedelta(days=int(REFRESH_TOKEN_EXPIRE_DAYS))
+    settings = get_settings()
+    access_token_expires = timedelta(minutes=int(settings.ACCESS_TOKEN_EXPIRE_MINUTES))
+    refresh_token_expires = timedelta(days=int(settings.REFRESH_TOKEN_EXPIRE_DAYS))
     access_token = create_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
@@ -156,7 +162,7 @@ async def login_for_access_token(
         httponly=True,
         secure=request.url.scheme == "https",
         samesite="lax",
-        max_age=int(REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
+        max_age=int(settings.REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
         path="/auth",
     )
     
@@ -184,8 +190,9 @@ async def refresh_access_token(
     if not token:
         raise credentials_exception
 
+    settings = get_settings()
     try:
-        token_payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        token_payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email = token_payload.get("sub")
         token_type = token_payload.get("token_type")
         if email is None or token_type != "refresh":
@@ -197,7 +204,7 @@ async def refresh_access_token(
     if user is None:
         raise credentials_exception
 
-    access_token_expires = timedelta(minutes=int(ACCESS_TOKEN_EXPIRE_MINUTES))
+    access_token_expires = timedelta(minutes=int(settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     access_token = create_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
@@ -208,7 +215,7 @@ async def refresh_access_token(
         httponly=True,
         secure=request.url.scheme == "https",
         samesite="lax",
-        max_age=int(REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
+        max_age=int(settings.REFRESH_TOKEN_EXPIRE_DAYS) * 24 * 60 * 60,
         path="/auth",
     )
     
