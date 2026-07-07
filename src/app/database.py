@@ -6,6 +6,10 @@ from src.app.config import get_settings
 
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 engine = None
 AsyncSessionFactory = None
 
@@ -39,6 +43,7 @@ def get_engine():
             parsed = parsed._replace(query=new_query)
             database_url = urlunparse(parsed)
 
+        logger.info("Connecting to database at: %s", database_url)
         engine = create_async_engine(
             database_url,
             echo=settings.DB_ECHO,

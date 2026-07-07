@@ -118,3 +118,124 @@ async def test_get_comments_returns_empty_for_user_without_group(client, db_sess
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_reply_to_reflection_inherits_group_and_date(client, db_session):
+    group = await create_group(db_session, name="Reply Group")
+    user = await create_user(
+        db_session,
+        email="reply_user@example.com",
+        password="password123",
+        full_name="Reply User",
+        role=UserRole.USER,
+        group_id=group.id,
+    )
+
+    # Post a top-level reflection
+    headers = await auth_headers(client, "reply_user@example.com", "password123")
+    parent_response = await client.post(
+        "/api/comments",
+        headers=headers,
+        json={"content": "Top-level reflection"},
+    )
+    assert parent_response.status_code == 200
+    parent_body = parent_response.json()
+    parent_id = parent_body["id"]
+
+    # Post a reply
+    reply_response = await client.post(
+        "/api/comments",
+        headers=headers,
+        json={"content": "This is a reply!", "parent_id": parent_id},
+    )
+    assert reply_response.status_code == 200
+    reply_body = reply_response.json()
+    assert reply_body["parent_id"] == parent_id
+    assert reply_body["group_id"] == str(group.id)
+    assert reply_body["target_date"] == parent_body["target_date"]
+
+
+@pytest.mark.asyncio
+async def test_replies_returned_with_reflections(client, db_session):
+    group = await create_group(db_session, name="Retrieval Group")
+    await create_user(
+        db_session,
+        email="retrieval_user@example.com",
+        password="password123",
+        full_name="Retrieval User",
+        role=UserRole.USER,
+        group_id=group.id,
+    )
+
+    headers = await auth_headers(client, "retrieval_user@example.com", "password123")
+    
+    # Create top level reflection
+    parent_res = await client.post(
+        "/api/comments",
+        headers=headers,
+        json={"content": "Top level reflection"},
+    )
+    parent_id = parent_res.json()["id"]
+
+    # Create two replies
+    await client.post(
+        "/api/comments",
+        headers=headers,
+        json={"content": "Reply 1", "parent_id": parent_id},
+    )
+    await client.post(
+        "/api/comments",
+        headers=headers,
+        json={"content": "Reply 2", "parent_id": parent_id},
+    )
+
+    # Fetch reflections
+    res = await client.get("/api/comments", headers=headers)
+    assert res.status_code == 200
+    body = res.json()
+    
+    # Should only return the 1 top-level reflection
+    assert len(body) == 1
+    assert body[0]["id"] == parent_id
+    assert len(body[0]["replies"]) == 2
+    assert body[0]["replies"][0]["content"] == "Reply 1"
+    assert body[0]["replies"][1]["content"] == "Reply 2"
+    assert body[0]["replies"][0]["user"]["full_name"] == "Retrieval User"
+
+
+@pytest.mark.asyncio
+async def test_delete_reflection_deletes_replies_cascade(client, db_session):
+    group = await create_group(db_session, name="Delete Cascade Group")
+    await create_user(
+        db_session,
+        email="cascade_user@example.com",
+        password="password123",
+        full_name="Cascade User",
+        role=UserRole.USER,
+        group_id=group.id,
+    )
+
+    headers = await auth_headers(client, "cascade_user@example.com", "password123")
+    
+    # Create reflection and a reply
+    parent_res = await client.post("/api/comments", headers=headers, json={"content": "Parent"})
+    parent_id = parent_res.json()["id"]
+    
+    reply_res = await client.post("/api/comments", headers=headers, json={"content": "Reply", "parent_id": parent_id})
+    reply_id = reply_res.json()["id"]
+
+    # Delete parent reflection
+    del_res = await client.delete(f"/api/comment/{parent_id}", headers=headers)
+    assert del_res.status_code == 200
+
+    # Try to fetch reflections, should be empty
+    res = await client.get("/api/comments", headers=headers)
+    assert len(res.json()) == 0
+
+    # Verify directly from DB that the reply is deleted
+    from src.app.models import Comment
+    from sqlalchemy import select
+    stmt = select(Comment).where(Comment.id == reply_id)
+    result = await db_session.execute(stmt)
+    assert result.scalars().first() is None

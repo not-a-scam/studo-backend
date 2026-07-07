@@ -185,12 +185,21 @@ async def create_reflection(
     session: Annotated[AsyncSession, Depends(get_session)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ):
-    """Post a reflection. Group ID is automatically bound to the user's group or specified group."""
-    group_id = comment_in.group_id
+    """Post a reflection or reply. Group ID and target date are inherited from the parent reflection if it's a reply."""
+    if comment_in.parent_id:
+        parent_comment = await session.get(Comment, comment_in.parent_id)
+        if not parent_comment:
+            raise HTTPException(status_code=404, detail="Parent reflection doesn't exist.")
+        group_id = parent_comment.group_id
+        target_date = parent_comment.target_date
+    else:
+        group_id = comment_in.group_id
+        target_date = date.today()
+
     if group_id:
         if current_user.role != UserRole.ADMIN and group_id != current_user.group_id:
             raise HTTPException(status_code=403, detail="You do not have access to post to this group.")
-    else:
+    elif not comment_in.parent_id: # only default group if not a reply and group_id not specified
         group_id = current_user.group_id
         if not group_id:
             stmt = select(Group).order_by(Group.created_at.asc())
@@ -204,13 +213,22 @@ async def create_reflection(
     new_comment = Comment(
         content=comment_in.content,
         user_id=current_user.id,
-        group_id=group_id
+        group_id=group_id,
+        parent_id=comment_in.parent_id,
+        target_date=target_date
     )
     session.add(new_comment)
     await session.commit()
     
     # Eagerly load the user relationship to avoid lazy loading MissingGreenlet issues
-    stmt = select(Comment).options(selectinload(Comment.user)).where(Comment.id == new_comment.id)
+    stmt = (
+        select(Comment)
+        .options(
+            selectinload(Comment.user),
+            selectinload(Comment.replies).selectinload(Comment.user)
+        )
+        .where(Comment.id == new_comment.id)
+    )
     result = await session.execute(stmt)
     return result.scalar_one()
 
@@ -222,7 +240,7 @@ async def get_group_reflections(
     target_date: date = date.today(),
     group_id: UUID | None = None,
 ):
-    """Fetch reflections from users in the same group, strictly restricted to a single day."""
+    """Fetch reflections from users in the same group, strictly restricted to a single day, returning only top-level ones with nested replies."""
     if group_id:
         if current_user.role != UserRole.ADMIN and group_id != current_user.group_id:
             raise HTTPException(status_code=403, detail="You do not have access to this group's reflections.")
@@ -237,14 +255,18 @@ async def get_group_reflections(
             else:
                 return []
 
-    # Filter by BOTH group_id and the target_date
+    # Filter by BOTH group_id and the target_date, and only fetch top-level comments (parent_id is None)
     query = (
         select(Comment)
-        .options(selectinload(Comment.user))
+        .options(
+            selectinload(Comment.user),
+            selectinload(Comment.replies).selectinload(Comment.user)
+        )
         .where(
             and_(
                 Comment.group_id == group_id,
-                Comment.target_date == target_date
+                Comment.target_date == target_date,
+                Comment.parent_id == None
             )
         )
         .order_by(Comment.created_at.desc())
@@ -260,7 +282,14 @@ async def delete_comment(
     user: Annotated[User, Depends(get_current_active_user)],
 ):
     """Delete a comment. Admin can update all comments while users can only update created comments"""
-    stmt = select(Comment).options(selectinload(Comment.user)).where(Comment.id == comment_id)
+    stmt = (
+        select(Comment)
+        .options(
+            selectinload(Comment.user),
+            selectinload(Comment.replies).selectinload(Comment.user)
+        )
+        .where(Comment.id == comment_id)
+    )
     result = await session.execute(stmt)
     target_comment = result.scalars().first()
     
@@ -306,7 +335,14 @@ async def update_comment(
     setattr(target_comment, "content", new_comment_data.content)
     await session.commit()
     
-    stmt = select(Comment).options(selectinload(Comment.user)).where(Comment.id == target_comment.id)
+    stmt = (
+        select(Comment)
+        .options(
+            selectinload(Comment.user),
+            selectinload(Comment.replies).selectinload(Comment.user)
+        )
+        .where(Comment.id == target_comment.id)
+    )
     result = await session.execute(stmt)
     return result.scalar_one()
 

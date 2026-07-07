@@ -7,6 +7,13 @@ from src.app.routes import auth, crud
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import logging 
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the ML model

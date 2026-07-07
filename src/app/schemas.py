@@ -89,6 +89,21 @@ class TaskCompletionResponse(BaseModel):
 class CommentCreate(BaseModel):
     content: str = Field(..., min_length=1, examples=["Today went great! Got blocked on item #2 but worked it out."])
     group_id: Optional[UUID] = None
+    parent_id: Optional[int] = None
+
+class ReplyResponse(BaseModel):
+    model_config=ConfigDict(
+        from_attributes=True
+    )
+    
+    id: int
+    content: str
+    target_date: date
+    user_id: UUID
+    group_id: UUID
+    parent_id: Optional[int] = None
+    created_at: datetime
+    user: Optional[UserBase] = None 
 
 class CommentResponse(BaseModel):
     model_config=ConfigDict(
@@ -100,8 +115,10 @@ class CommentResponse(BaseModel):
     target_date: date
     user_id: UUID
     group_id: UUID
+    parent_id: Optional[int] = None
     created_at: datetime
     user: Optional[UserBase] = None 
+    replies: List[ReplyResponse] = []
         
 class UserProgress(BaseModel):
     user_id: UUID

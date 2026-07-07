@@ -140,8 +140,26 @@ class Comment(Base):
     
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     group_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
-    user: Mapped["User"] = relationship(back_populates="comments")
+    user: Mapped["User"] = relationship(back_populates="comments", lazy="selectin")
     group: Mapped["Group"] = relationship(back_populates="comments")
+    parent: Mapped[Optional["Comment"]] = relationship(
+        "Comment",
+        remote_side=[id],
+        back_populates="replies"
+    )
+    replies: Mapped[List["Comment"]] = relationship(
+        "Comment",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        order_by="Comment.created_at.asc()",
+        lazy="selectin"
+    )
